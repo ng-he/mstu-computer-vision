@@ -1,0 +1,5 @@
+/build
+/dist
+
+# clangd's index, which it puts beside compile_commands.json.
+/.cache
