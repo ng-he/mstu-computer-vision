@@ -23,16 +23,43 @@ if(NOT MSTU_SDK_ABI)
     endif()
 endif()
 
-add_library(mstu_computer_vision SHARED
-    src/plugin.cpp
-    src/schema.cpp
-)
+# OpenCV's dnn carries the whole way from a jpeg to a list of boxes. Without
+# it the node still loads, describes itself and hands images on, and says in
+# its own reading that it was built with nothing to detect with -- so a clone
+# of the centre repository stays green on a machine that has not got it.
+find_package(OpenCV QUIET COMPONENTS core imgproc imgcodecs dnn)
 
-target_include_directories(mstu_computer_vision PRIVATE "${MSTU_SDK_ABI}" src)
+set(sources src/plugin.cpp src/schema.cpp src/worker.cpp src/labels.cpp
+            src/preview.cpp)
 
-if(NOT MSVC)
-    target_compile_options(mstu_computer_vision PRIVATE -Wall -Wextra -Werror)
+if(OpenCV_FOUND)
+    list(APPEND sources src/opencv.cpp)
+    message(STATUS "mstu-computer-vision: detecting with OpenCV ${OpenCV_VERSION}")
+else()
+    list(APPEND sources src/nobackend.cpp)
+    message(STATUS "mstu-computer-vision: no OpenCV, nothing will be detected")
 endif()
+
+function(mstu_target name)
+    target_include_directories(${name} PRIVATE "${MSTU_SDK_ABI}" src)
+
+    if(OpenCV_FOUND)
+        target_link_libraries(${name} PRIVATE ${OpenCV_LIBS})
+
+        # SYSTEM, or -Werror turns OpenCV's own deprecation warnings -- its
+        # 4.6 headers add enums together -- into our build failing.
+        target_include_directories(${name} SYSTEM PRIVATE ${OpenCV_INCLUDE_DIRS})
+        target_compile_definitions(${name} PRIVATE MSTU_WITH_OPENCV)
+    endif()
+
+    if(NOT MSVC)
+        target_compile_options(${name} PRIVATE -Wall -Wextra -Werror)
+    endif()
+endfunction()
+
+add_library(mstu_computer_vision SHARED ${sources})
+
+mstu_target(mstu_computer_vision)
 
 # collect.sh looks in dist/ for the library and the ui folder, the same as it
 # does for a plugin cargo knows nothing about.
@@ -46,16 +73,13 @@ enable_testing()
 
 # The tests link the plugin's own sources rather than the library, so they can
 # reach what the descriptor does not expose.
-add_executable(tests
-    tests/tests.cpp
-    src/plugin.cpp
-    src/schema.cpp
-)
+add_executable(tests tests/tests.cpp ${sources})
 
-target_include_directories(tests PRIVATE "${MSTU_SDK_ABI}" src)
+mstu_target(tests)
 
-if(NOT MSVC)
-    target_compile_options(tests PRIVATE -Wall -Wextra -Werror)
-endif()
+# Where model.sh puts what it fetched, so a test can look for it and say it
+# was skipped rather than failing when it is not there.
+target_compile_definitions(tests PRIVATE
+    MSTU_MODELS="${CMAKE_CURRENT_SOURCE_DIR}/models")
 
 add_test(NAME tests COMMAND tests)

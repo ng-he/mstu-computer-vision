@@ -1,19 +1,18 @@
 // A node that looks at images and says what is in them.
-//
-// This is the step before any detecting: the image goes through untouched and
-// the list of objects goes out empty, so the whole of the engine's side -- the
-// schemas, the settings, the command, the events, the readings -- is in place
-// and running before a model is loaded into it.
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <set>
 #include <string>
+#include <vector>
 
 #include "host.hpp"
+#include "preview.hpp"
 #include "schema.hpp"
+#include "worker.hpp"
 
 namespace mstu::vision {
 namespace {
@@ -23,21 +22,82 @@ const Metadata METADATA = {MSTU_STR("Computer vision"), MSTU_STR("0.1.0")};
 /// How often readings go out while images are flowing.
 constexpr auto LIVE_INTERVAL = std::chrono::milliseconds(250);
 
+/// How many numbers one detection is written as.
+constexpr size_t OBJECT_FIELDS = 7;
+
 using Clock = std::chrono::steady_clock;
+
+/// The classes in one lot of detections, each named once, in one string.
+std::string classes_of(const std::vector<Detection> &found) {
+    std::set<std::string> named;
+
+    for (const Detection &one : found) {
+        named.insert(one.name);
+    }
+
+    std::string all;
+
+    for (const std::string &name : named) {
+        if (!all.empty()) {
+            all += ",";
+        }
+
+        all += name;
+    }
+
+    return all;
+}
+
+/// Splits a comma separated setting, trimming the spaces people leave.
+std::vector<std::string> split(std::string_view text) {
+    std::vector<std::string> parts;
+    size_t at = 0;
+
+    while (at <= text.size()) {
+        const size_t comma = text.find(',', at);
+        const size_t end = comma == std::string_view::npos ? text.size() : comma;
+
+        std::string_view part = text.substr(at, end - at);
+
+        while (!part.empty() && part.front() == ' ') {
+            part.remove_prefix(1);
+        }
+
+        while (!part.empty() && part.back() == ' ') {
+            part.remove_suffix(1);
+        }
+
+        if (!part.empty()) {
+            parts.emplace_back(part);
+        }
+
+        if (comma == std::string_view::npos) {
+            break;
+        }
+
+        at = comma + 1;
+    }
+
+    return parts;
+}
 
 class Vision {
   public:
-    Vision(const HostContext *ctx, Str id) : host_(ctx, std::string(view(id))) {}
+    Vision(const HostContext *ctx, Str id)
+        : host_(ctx, std::string(view(id))), preview_(std::string(view(id))) {
+        worker_.preview(preview_.wanted());
+    }
 
     const std::string &id() const { return host_.id(); }
 
     bool settings(Writer *out) const {
         const Value values[] = {
             mstu_str(model_.data(), model_.size()),
-            mstu_float(confidence_),
+            mstu_float(wanted_.confidence),
             mstu_str(classes_.data(), classes_.size()),
-            mstu_uint(max_objects_),
+            mstu_uint(wanted_.most),
             mstu_bool(only_when_found_),
+            mstu_bool(preview_.wanted()),
         };
 
         return mstu_fill(out, values, std::size(values));
@@ -45,22 +105,34 @@ class Vision {
 
     bool set(uintptr_t field, Value value) {
         switch (field) {
-        case SettingModel:
+        case SettingModel: {
             if (value.kind != ValueString) {
                 return false;
             }
 
             model_ = std::string(view(value.data.string_));
-            note_.clear();
+
+            // Reading a model is the thread's first job, so this returns
+            // before tens of megabytes have been read.
+            if (model_.empty()) {
+                worker_.stop();
+                log(Info, "no model named, images pass through untouched");
+            } else {
+                worker_.want(wanted_);
+                worker_.start(model_);
+                log(Info, "reading model " + model_);
+            }
 
             return true;
+        }
 
         case SettingConfidence:
             if (value.kind != ValueFloat) {
                 return false;
             }
 
-            confidence_ = value.data.float_;
+            wanted_.confidence = value.data.float_;
+            worker_.want(wanted_);
 
             return true;
 
@@ -70,6 +142,8 @@ class Vision {
             }
 
             classes_ = std::string(view(value.data.string_));
+            wanted_.classes = split(classes_);
+            worker_.want(wanted_);
 
             return true;
 
@@ -78,7 +152,8 @@ class Vision {
                 return false;
             }
 
-            max_objects_ = static_cast<uint32_t>(value.data.uint_);
+            wanted_.most = static_cast<uint32_t>(value.data.uint_);
+            worker_.want(wanted_);
 
             return true;
 
@@ -88,6 +163,16 @@ class Vision {
             }
 
             only_when_found_ = value.data.bool_;
+
+            return true;
+
+        case SettingPreview:
+            if (value.kind != ValueBool) {
+                return false;
+            }
+
+            preview_.set(value.data.bool_);
+            worker_.preview(value.data.bool_);
 
             return true;
 
@@ -114,8 +199,8 @@ class Vision {
         const std::string_view named = view(codec->data.string_);
 
         if (named != "jpeg") {
-            note_ = std::string(named) + " is not an image this reads";
-            log(Warn, note_);
+            trouble_ = std::string(named) + " is not an image this reads";
+            log(Warn, trouble_);
 
             return false;
         }
@@ -129,7 +214,7 @@ class Vision {
 
         codec_ = named;
         announce_ = true;
-        note_.clear();
+        trouble_.clear();
 
         return true;
     }
@@ -140,58 +225,119 @@ class Vision {
             changed();
         }
 
-        const Value *time = mstu_value(ctx->input, FieldStartTime);
-        const Value *width = mstu_value(ctx->input, FieldWidth);
-        const Value *height = mstu_value(ctx->input, FieldHeight);
-        const Value *image = mstu_value(ctx->input, FieldBytes);
+        Looked image;
 
-        // A round with nothing in it is how a source says it is done.
-        if (time == nullptr || image == nullptr) {
-            return false;
-        }
-
-        if (image->kind != ValueBytes) {
+        if (!taken(ctx->input, image)) {
             return false;
         }
 
         images_ += 1;
 
-        // Nothing detects yet, so every image holds nothing as far as this
-        // knows: asked for only what was found, it hands on nothing at all.
-        // That is the setting working, not a fault.
-        if (only_when_found_) {
-            report();
+        // With a detector running, the looking happens on its thread and what
+        // comes back is whatever it has finished by now. Without one -- no
+        // model named, or a model that would not read -- the image goes
+        // straight on with nothing found in it, so a pipeline drawn around
+        // this node keeps working and the reading says why.
+        if (worker_.state() == State::Looking) {
+            worker_.offer(std::move(image));
 
+            if (!worker_.take(image)) {
+                report();
+
+                return true;
+            }
+        }
+
+        objects_ += image.found.size();
+
+        // The drawn copy when there is one, the image itself when there is
+        // not: a page showing the plain picture beats a page showing nothing.
+        preview_.keep(image.drawn.empty() ? image.jpeg : image.drawn);
+
+        showing_ = classes_of(image.found);
+
+        report();
+
+        if (image.found.empty() && only_when_found_) {
             return true;
         }
 
-        const uintptr_t len = image->data.bytes_.len;
+        found(image.found);
 
-        uint8_t *payload = mstu_reserve(ctx->output, len);
+        return written(ctx->output, image);
+    }
+
+  private:
+    void log(LogLevel level, std::string_view message) const { host_.log(level, message); }
+
+    /// Reads one round's input into a job of its own.
+    bool taken(const Message *input, Looked &job) const {
+        const Value *time = mstu_value(input, FieldStartTime);
+        const Value *width = mstu_value(input, FieldWidth);
+        const Value *height = mstu_value(input, FieldHeight);
+        const Value *image = mstu_value(input, FieldBytes);
+
+        // A round with nothing in it is how a source says it is done.
+        if (time == nullptr || image == nullptr || image->kind != ValueBytes) {
+            return false;
+        }
+
+        job.start_time = time->data.uint_;
+        job.width = width != nullptr ? static_cast<uint32_t>(width->data.uint_) : 0;
+        job.height = height != nullptr ? static_cast<uint32_t>(height->data.uint_) : 0;
+        job.found.clear();
+
+        job.jpeg.assign(image->data.bytes_.ptr, image->data.bytes_.ptr + image->data.bytes_.len);
+
+        return true;
+    }
+
+    /// Writes the image back out with what was found in it beside it.
+    bool written(Writer *out, const Looked &image) {
+        const size_t count = image.found.size();
+
+        // Reserved up front: a record points into this, so it must not move
+        // while the message is being filled.
+        std::vector<Value> cells(count * OBJECT_FIELDS);
+        std::vector<Value> records;
+
+        records.reserve(count);
+
+        for (size_t at = 0; at < count; at += 1) {
+            const Detection &one = image.found[at];
+            Value *cell = cells.data() + at * OBJECT_FIELDS;
+
+            cell[0] = mstu_str(one.name.data(), one.name.size());
+            cell[1] = mstu_uint(one.class_id);
+            cell[2] = mstu_float(one.confidence);
+            cell[3] = mstu_uint(one.x);
+            cell[4] = mstu_uint(one.y);
+            cell[5] = mstu_uint(one.width);
+            cell[6] = mstu_uint(one.height);
+
+            records.push_back(mstu_record(cell, OBJECT_FIELDS));
+        }
+
+        uint8_t *payload = mstu_reserve(out, image.jpeg.size());
 
         if (payload == nullptr) {
             return false;
         }
 
-        if (len > 0) {
-            std::memcpy(payload, image->data.bytes_.ptr, len);
+        if (!image.jpeg.empty()) {
+            std::memcpy(payload, image.jpeg.data(), image.jpeg.size());
         }
 
         const Value values[] = {
-            mstu_uint(time->data.uint_),
-            mstu_uint(width != nullptr ? width->data.uint_ : 0),
-            mstu_uint(height != nullptr ? height->data.uint_ : 0),
-            mstu_bytes(payload, len),
-            mstu_list(nullptr, 0),
+            mstu_uint(image.start_time),
+            mstu_uint(image.width),
+            mstu_uint(image.height),
+            mstu_bytes(payload, image.jpeg.size()),
+            mstu_list(records.data(), records.size()),
         };
 
-        report();
-
-        return mstu_fill(ctx->output, values, std::size(values));
+        return mstu_fill(out, values, std::size(values));
     }
-
-  private:
-    void log(LogLevel level, std::string_view message) const { host_.log(level, message); }
 
     /// Tells whoever takes the images what they are, which is what they were:
     /// this hands a jpeg on as a jpeg.
@@ -205,6 +351,24 @@ class Vision {
         if (!host_.raise(EventImageChanged, values, std::size(values))) {
             log(Warn, "the host took no image.changed to fill");
         }
+    }
+
+    /// Raised when what is in view changes rather than on every image, since
+    /// a camera watching a road would otherwise raise it thirty times a
+    /// second and say nothing new each time.
+    void found(const std::vector<Detection> &all) {
+        if (showing_ == raised_) {
+            return;
+        }
+
+        raised_ = showing_;
+
+        const Value values[] = {
+            mstu_uint(all.size()),
+            mstu_str(raised_.data(), raised_.size()),
+        };
+
+        host_.raise(EventObjectsFound, values, std::size(values));
     }
 
     /// The readings the plugin's own page shows, at most four a second.
@@ -225,16 +389,21 @@ class Vision {
             fps = (images_ - counted_) * 1000 / static_cast<uint64_t>(elapsed);
         }
 
-        const std::string state = codec_.empty() ? "idle" : "detecting";
+        const std::string state = named(worker_.state());
+        const std::string backend = worker_.backend();
+        const std::string note = trouble_.empty() ? worker_.note() : trouble_;
+        const std::string shown = preview_.path();
 
         const Value values[] = {
             mstu_str(state.data(), state.size()),
             mstu_uint(images_),
             mstu_uint(objects_),
-            mstu_uint(dropped_),
+            mstu_uint(worker_.dropped()),
             mstu_uint(fps),
-            mstu_str("none", 4),
-            mstu_str(note_.data(), note_.size()),
+            mstu_str(backend.data(), backend.size()),
+            mstu_str(note.data(), note.size()),
+            mstu_str(showing_.data(), showing_.size()),
+            mstu_str(shown.data(), shown.size()),
         };
 
         host_.live(values, std::size(values));
@@ -243,12 +412,28 @@ class Vision {
         counted_ = images_;
     }
 
+    static const char *named(State state) {
+        switch (state) {
+        case State::Loading:
+            return "loading";
+        case State::Looking:
+            return "detecting";
+        case State::Failed:
+            return "failed";
+        case State::Idle:
+            break;
+        }
+
+        return "idle";
+    }
+
     Host host_;
+    Worker worker_;
+    Preview preview_;
 
     std::string model_;
-    double confidence_ = 0.5;
     std::string classes_;
-    uint32_t max_objects_ = 0;
+    Wanted wanted_;
     bool only_when_found_ = false;
 
     /// What the images are, as the command said. Empty until it does.
@@ -257,10 +442,16 @@ class Vision {
     /// Set by the command, acted on by the next round.
     bool announce_ = false;
 
+    /// The classes in view now, and the ones objects.found last said, so it
+    /// is raised on a change rather than on every image.
+    std::string showing_;
+    std::string raised_;
+
     uint64_t images_ = 0;
     uint64_t objects_ = 0;
-    uint64_t dropped_ = 0;
-    std::string note_;
+
+    /// Something this plugin itself has to say, which outranks the thread's.
+    std::string trouble_;
 
     Clock::time_point beat_{};
     uint64_t counted_ = 0;
@@ -306,9 +497,12 @@ bool set_parameter(PluginHandle handle, uintptr_t field, Value value) {
     return static_cast<Vision *>(handle)->set(field, value);
 }
 
-/// No page of its own yet, so the engine draws the node and nothing more.
+/// The folder beside the library, which the host serves to the page.
+///
+/// Named as collect.sh leaves it, not as it is called here: the plugins go
+/// into one flat folder, so every ui folder carries its plugin's name.
 Str ui() {
-    return Str{nullptr, 0};
+    return MSTU_STR("mstu-computer-vision-ui");
 }
 
 bool process(PluginHandle handle, ProcessContext *ctx) {

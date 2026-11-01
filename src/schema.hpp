@@ -20,6 +20,7 @@ enum Setting : uintptr_t {
     SettingClasses,
     SettingMaxObjects,
     SettingOnlyWhenFound,
+    SettingPreview,
 };
 
 /// Where each event is, in the order EVENTS names them.

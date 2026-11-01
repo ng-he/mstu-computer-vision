@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Computer vision</title>
+    <link rel="stylesheet" href="./_sdk/mstu.css" />
+    <style>
+      .mstu-field {
+        margin-top: 8px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: auto 1fr auto 1fr;
+        align-items: center;
+        gap: 6px 8px;
+        margin-top: 8px;
+      }
+
+      .grid label {
+        font-size: 10px;
+        color: var(--mstu-text-dim);
+        white-space: nowrap;
+      }
+
+      .grid input {
+        min-width: 0;
+        width: 100%;
+      }
+
+      .wide {
+        grid-column: span 3;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 10px;
+      }
+
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 10px;
+        color: var(--mstu-text-dim);
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .toggle input {
+        margin: 0;
+        accent-color: var(--mstu-accent);
+      }
+
+      /* What is in view, one chip per class, so a glance says what the node
+         is seeing without reading the picture. */
+      .seen {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 8px;
+        min-height: 16px;
+      }
+
+      .seen:empty::after {
+        content: 'nothing in view';
+        font-size: 10px;
+        color: var(--mstu-text-faint);
+      }
+
+      /* The latest image with its boxes, served by the host from the file the
+         plugin keeps. */
+      .shot {
+        display: block;
+        width: 100%;
+        margin-top: 8px;
+        border-radius: 3px;
+        background: var(--mstu-bg-input);
+      }
+
+      .shot[hidden] {
+        display: none;
+      }
+
+      .counts {
+        margin-top: 8px;
+        font-family: var(--mstu-mono);
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+        color: var(--mstu-text-faint);
+      }
+
+      .counts b {
+        font-weight: normal;
+        color: var(--mstu-text-dim);
+      }
+
+      .why {
+        margin-top: 6px;
+        font-size: 10px;
+        line-height: 1.4;
+        color: var(--mstu-red, #d08770);
+      }
+
+      .why[hidden] {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="mstu-label">Model</div>
+
+    <div class="mstu-field">
+      <input id="model" placeholder="No model selected" />
+      <button id="browse" title="Choose a model">…</button>
+    </div>
+
+    <div class="grid">
+      <label for="confidence">confidence</label>
+      <input class="mstu-input" id="confidence" type="number" min="0" max="1" step="0.05" />
+
+      <label for="most">most</label>
+      <input class="mstu-input" id="most" type="number" min="0" placeholder="all" />
+
+      <label for="classes">only</label>
+      <input class="mstu-input wide" id="classes" type="text" placeholder="every class" />
+    </div>
+
+    <div class="row">
+      <label class="toggle"><input type="checkbox" id="only" /> only when found</label>
+
+      <label class="toggle"><input type="checkbox" id="preview" checked /> preview</label>
+    </div>
+
+    <div class="seen" id="seen"></div>
+
+    <img class="shot" id="shot" alt="the latest image with what was found in it" hidden />
+
+    <div class="counts">
+      <b id="images">0</b> images · <b id="fps">0</b>/s · <span id="dropped"></span>
+    </div>
+
+    <div class="why" id="note" hidden></div>
+
+    <div class="mstu-status">
+      <span class="mstu-dot" id="dot"></span>
+      <span id="state">idle</span>
+      <span class="mstu-count" id="objects">0</span>
+    </div>
+
+    <script type="module" src="./index.js"></script>
+  </body>
+</html>

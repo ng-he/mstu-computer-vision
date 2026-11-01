@@ -7,17 +7,16 @@ Rust.
 ```sh
 ./build.sh
 ./test.sh
+./model.sh      # once, to fetch the model it detects with
 ```
 
-Which is what the centre repository calls to build and test this one. It needs
-cmake and a compiler that takes C++20; both scripts say so and pass when cmake
-is missing, so a fresh clone of the centre repository stays green.
+The first two are what the centre repository calls. It needs cmake and a
+compiler that takes C++20, and OpenCV to detect with; every script says so and
+passes without what it wants, so a fresh clone of the centre repository stays
+green. Built without OpenCV the node still loads, still describes itself and
+still hands images on, and its own reading says why it finds nothing.
 
 ## What it does
-
-Nothing yet. This is the step before any detecting: an image goes through
-untouched and the list of objects goes out empty, so the whole of the engine's
-side is in place and running before a model is loaded into it.
 
 It takes images the way the
 [image decoder](https://github.com/ng-he/mstu-image-decoder) gives them — the
@@ -45,6 +44,39 @@ case, at the price of the node no longer being transparent.
 The list of records is **one leaf** when nodes are wired field to field, so
 whatever takes the detections has to declare the same record, field for field.
 That shape is a contract on both ends of the wire.
+
+## What it detects with
+
+OpenCV's `dnn`, which carries the whole way from a jpeg to a list of boxes:
+`imdecode` reads the image, `readNet` the model, `NMSBoxes` drops the weaker of
+two boxes over the same thing -- one class at a time, because two different
+things in the same place are both there.
+
+What it expects is a **YOLOX** export: one output of `[1, boxes, 5 + classes]`,
+with the boxes still in grid units, since the ONNX releases are exported
+without the decode. That decode -- strides of 8, 16 and 32, `exp` on the width
+and height, the objectness gating the class scan -- is the only part of the
+backend particular to a family of models, and it is about forty lines. A class
+number is named from the COCO eighty, or from a `.names` file beside the model
+for anything trained on something else.
+
+`./model.sh` fetches **YOLOX-tiny**, which is Apache-2.0. Ultralytics' YOLOv8
+and YOLOv5 weights are AGPL-3.0, and a default that dragged that licence into
+everything built here would be a decision taken on the user's behalf; pointing
+the `model` setting at one is their decision instead. `build.sh` does not call
+it: a build that needs the network is a build that fails on a train.
+
+Detection takes tens of milliseconds and `process` runs on one of the engine's
+own threads, so the looking happens on a thread of this plugin's. An image
+offered while one is being looked at **replaces** what was waiting and the
+dropped count rises -- a detection three seconds late is of use to nobody.
+Throttling for real belongs upstream, in the image decoder's `rate` and
+`min_change`.
+
+The image is copied once on the way in, because the engine's own bytes are
+gone by the time the looking is done and the image has to leave with the boxes
+found in it. A jpeg is tens of kilobytes; this is the price of not blocking
+the engine.
 
 ## Why C++
 
@@ -86,14 +118,38 @@ exactly this reason.
 event lock while a subscriber runs, so raising one from a handler it delivered
 deadlocks. `codec.change` sets a flag and the next round does the raising.
 
-## It will need a model
+## How it is tested
 
-Detection comes next, through OpenCV's `dnn`: `imdecode` takes the jpeg,
-`readNet` the model, `NMSBoxes` the overlapping boxes, and `imencode` puts a
-preview back together with the boxes drawn on it. One dependency for the whole
-pipeline, and a seam of its own so ONNX Runtime or TensorRT can take its place.
+`tests/tests.cpp` **draws a red octagon with STOP written on it** and asks the
+model what it is. A model trained on COCO says `stop sign`, with the box where
+the octagon was drawn -- and the box is what makes the test worth having, since
+a grid decode out by one cell of the coarsest head still finds the sign and
+puts it thirty-two pixels away. Drawn rather than photographed, so there is no
+image committed beside it, no network, and the same pixels every run.
 
-The default model will be **YOLOX**, which is Apache-2.0. Ultralytics' YOLOv8
-and YOLOv5 weights are AGPL-3.0, and a build script that downloads one by
-default would make that licence part of what everyone ships; pointing the
-`model` setting at one is a choice, and the choice should be the user's.
+It skips, rather than fails, without OpenCV or without the model.
+
+## Its own page
+
+`ui/` is the page the desktop app mounts inside the node: the model to detect
+with, what to detect, and the latest image with its boxes drawn on.
+
+The picture goes through a **file**. A live reading carries the length of a
+bytes field and not the bytes, and the app already serves a local file to a
+plugin's page, so the plugin keeps the latest jpeg in
+`$XDG_RUNTIME_DIR/mstu-preview-<id>.jpg` and the reading names it. Written
+beside and renamed over, so a page never catches half an image, and at most
+four times a second, which is about as often as a page redraws.
+
+The boxes are drawn by the backend rather than beside it, because drawing is
+pixel work and pixels are what a backend owns -- one that keeps them on a GPU
+draws there and hands back only the jpeg. They are drawn in the colour the
+canvas draws a transform node in, which is what this node is.
+
+Turning the preview off stops the decode and the encode as well as the file:
+nothing downstream wants the drawn copy, so it is only made when a page is
+there to look at it.
+
+## Still to come
+
+`dnn`'s CUDA backend, or ONNX Runtime, behind the same `Detector` seam.

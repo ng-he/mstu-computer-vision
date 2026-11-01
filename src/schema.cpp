@@ -53,6 +53,10 @@ static const Field SETTINGS_FIELDS[] = {
     {MSTU_STR("only_when_found"), &MSTU_TYPE_BOOL,
      MSTU_STR("Hands on nothing when an image held no object, instead of the image with an "
               "empty list. Saves the work downstream and costs this node its transparency.")},
+    {MSTU_STR("preview"), &MSTU_TYPE_BOOL,
+     MSTU_STR("Keeps the latest image, with the boxes drawn on it, in a file for this plugin's "
+              "own page. A decode and an encode per picture, a few a second; turn it off and "
+              "the page shows nothing.")},
 };
 
 const Schema SETTINGS_SCHEMA = {MSTU_SLICE(SETTINGS_FIELDS)};
@@ -69,6 +73,11 @@ static const Field LIVE_FIELDS[] = {
     {MSTU_STR("backend"), &MSTU_TYPE_STRING, MSTU_STR("What is doing the looking.")},
     {MSTU_STR("note"), &MSTU_TYPE_STRING,
      MSTU_STR("Why it is in the state it is, when it is worth saying.")},
+    {MSTU_STR("objects_now"), &MSTU_TYPE_STRING,
+     MSTU_STR("The classes in view at the moment, each named once and separated by commas.")},
+    {MSTU_STR("preview"), &MSTU_TYPE_STRING,
+     MSTU_STR("Path of the file holding the latest image with its boxes, for a page to show. "
+              "Empty when previews are off or nothing has been looked at.")},
 };
 
 const Schema LIVE_SCHEMA = {MSTU_SLICE(LIVE_FIELDS)};
