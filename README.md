@@ -131,8 +131,17 @@ It skips, rather than fails, without OpenCV or without the model.
 
 ## Its own page
 
-`ui/` is the page the desktop app mounts inside the node: the model to detect
-with, what to detect, and the latest image with its boxes drawn on.
+`ui/` is the page the desktop app mounts inside the node: the settings on the
+left, and the latest image with its boxes drawn on beside them. The node asks
+for 1224 pixels across when previews are on and folds back to 320 when they
+are off, so a node showing nothing takes no room for it -- a box drawn on a
+frame cannot be read in a column a few hundred pixels wide.
+
+The box is asked for again when the picture's shape changes, because a
+picture has no height until it has loaded: ask once at mount and the node is
+sized for a page with no picture in it, and the one that arrives afterwards is
+cut off. Not on every load, since the picture changes several times a second
+and asking for a box lays the whole canvas out again.
 
 The picture goes through a **file**. A live reading carries the length of a
 bytes field and not the bytes, and the app already serves a local file to a

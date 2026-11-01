@@ -5,6 +5,36 @@
     <title>Computer vision</title>
     <link rel="stylesheet" href="./_sdk/mstu.css" />
     <style>
+      /* Settings on the left, the picture on the right. The page folds back
+         into one column when previews are off, so a node that shows nothing
+         takes no room for it. */
+      .page {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+      }
+
+      .settings {
+        flex: none;
+        width: 280px;
+      }
+
+      .page.alone .settings {
+        width: auto;
+        flex: 1;
+      }
+
+      .preview {
+        display: grid;
+        flex: 1;
+        min-width: 0;
+        place-items: center;
+      }
+
+      .page.alone .preview {
+        display: none;
+      }
+
       .mstu-field {
         margin-top: 8px;
       }
@@ -71,16 +101,37 @@
       }
 
       /* The latest image with its boxes, served by the host from the file the
-         plugin keeps. */
+         plugin keeps.
+
+         Sized by the picture rather than by the column, so a tall one is
+         centred at the size it fits in instead of sitting between two bars,
+         and capped in height so it cannot make the node taller than the
+         canvas allows. */
       .shot {
         display: block;
-        width: 100%;
-        margin-top: 8px;
+        max-width: 100%;
+        max-height: 640px;
         border-radius: 3px;
-        background: var(--mstu-bg-input);
       }
 
       .shot[hidden] {
+        display: none;
+      }
+
+      /* Holds the column open before the first picture, so the node does not
+         jump about as one arrives. */
+      .waiting {
+        display: grid;
+        place-items: center;
+        width: 100%;
+        min-height: 160px;
+        border: 1px dashed var(--mstu-border);
+        border-radius: 3px;
+        font-size: 10px;
+        color: var(--mstu-text-faint);
+      }
+
+      .waiting[hidden] {
         display: none;
       }
 
@@ -110,44 +161,51 @@
     </style>
   </head>
   <body>
-    <div class="mstu-label">Model</div>
+    <div class="page" id="page">
+      <div class="settings">
+        <div class="mstu-label">Model</div>
 
-    <div class="mstu-field">
-      <input id="model" placeholder="No model selected" />
-      <button id="browse" title="Choose a model">…</button>
-    </div>
+        <div class="mstu-field">
+          <input id="model" placeholder="No model selected" />
+          <button id="browse" title="Choose a model">…</button>
+        </div>
 
-    <div class="grid">
-      <label for="confidence">confidence</label>
-      <input class="mstu-input" id="confidence" type="number" min="0" max="1" step="0.05" />
+        <div class="grid">
+          <label for="confidence">confidence</label>
+          <input class="mstu-input" id="confidence" type="number" min="0" max="1" step="0.05" />
 
-      <label for="most">most</label>
-      <input class="mstu-input" id="most" type="number" min="0" placeholder="all" />
+          <label for="most">most</label>
+          <input class="mstu-input" id="most" type="number" min="0" placeholder="all" />
 
-      <label for="classes">only</label>
-      <input class="mstu-input wide" id="classes" type="text" placeholder="every class" />
-    </div>
+          <label for="classes">only</label>
+          <input class="mstu-input wide" id="classes" type="text" placeholder="every class" />
+        </div>
 
-    <div class="row">
-      <label class="toggle"><input type="checkbox" id="only" /> only when found</label>
+        <div class="row">
+          <label class="toggle"><input type="checkbox" id="only" /> only when found</label>
 
-      <label class="toggle"><input type="checkbox" id="preview" checked /> preview</label>
-    </div>
+          <label class="toggle"><input type="checkbox" id="preview" checked /> preview</label>
+        </div>
 
-    <div class="seen" id="seen"></div>
+        <div class="seen" id="seen"></div>
 
-    <img class="shot" id="shot" alt="the latest image with what was found in it" hidden />
+        <div class="counts">
+          <b id="images">0</b> images · <b id="fps">0</b>/s · <span id="dropped"></span>
+        </div>
 
-    <div class="counts">
-      <b id="images">0</b> images · <b id="fps">0</b>/s · <span id="dropped"></span>
-    </div>
+        <div class="why" id="note" hidden></div>
 
-    <div class="why" id="note" hidden></div>
+        <div class="mstu-status">
+          <span class="mstu-dot" id="dot"></span>
+          <span id="state">idle</span>
+          <span class="mstu-count" id="objects">0</span>
+        </div>
+      </div>
 
-    <div class="mstu-status">
-      <span class="mstu-dot" id="dot"></span>
-      <span id="state">idle</span>
-      <span class="mstu-count" id="objects">0</span>
+      <div class="preview">
+        <img class="shot" id="shot" alt="the latest image with what was found in it" hidden />
+        <div class="waiting" id="waiting">nothing looked at yet</div>
+      </div>
     </div>
 
     <script type="module" src="./index.js"></script>
